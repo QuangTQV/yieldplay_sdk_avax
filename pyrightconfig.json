@@ -1,0 +1,11 @@
+{
+  "include": ["yieldplay", "main.py", "examples"],
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.11",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "reportUnknownVariableType": false,
+  "reportUnknownArgumentType": false,
+  "reportUnknownMemberType": false,
+  "reportAttributeAccessIssue": false
+}
