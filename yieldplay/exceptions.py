@@ -8,17 +8,13 @@ from __future__ import annotations
 
 
 class YieldPlayError(Exception):
-    """Base exception for all YieldPlay errors."""
-
     def __init__(self, message: str, details: str = "") -> None:
         super().__init__(message)
         self.message = message
         self.details = details
 
     def __str__(self) -> str:
-        if self.details:
-            return f"{self.message}: {self.details}"
-        return self.message
+        return f"{self.message}: {self.details}" if self.details else self.message
 
 
 # ── Contract / chain errors ────────────────────────────────────────────────
@@ -29,70 +25,98 @@ class ContractCallError(YieldPlayError):
 
 
 class TransactionError(YieldPlayError):
-    """Raised when a state-changing transaction fails or reverts."""
-
     def __init__(self, message: str, tx_hash: str = "", details: str = "") -> None:
         super().__init__(message, details)
         self.tx_hash = tx_hash
 
 
 class TransactionRevertedError(TransactionError):
-    """Raised when a sent transaction is mined but has status=0."""
+    """Transaction mined but status=0."""
 
 
-# ── Business / validation errors ──────────────────────────────────────────
+# ── Business errors ────────────────────────────────────────────────────────
 
 
 class RoundNotActiveError(YieldPlayError):
-    """Round is not in a state that accepts deposits."""
+    pass
 
 
 class RoundNotInProgressError(YieldPlayError):
-    """Operation requires RoundStatus.IN_PROGRESS."""
+    pass
 
 
 class RoundNotLockingError(YieldPlayError):
-    """Operation requires RoundStatus.LOCKING or later."""
+    pass
 
 
 class RoundNotChoosingWinnersError(YieldPlayError):
-    """Operation requires RoundStatus.CHOOSING_WINNERS."""
+    pass
 
 
 class RoundNotDistributingError(YieldPlayError):
-    """Operation requires RoundStatus.DISTRIBUTING_REWARDS."""
+    pass
 
 
 class AlreadyClaimedError(YieldPlayError):
-    """User already claimed for this round."""
+    pass
 
 
 class NoDepositFoundError(YieldPlayError):
-    """User has no deposit in this round."""
+    pass
 
 
 class InvalidAmountError(YieldPlayError):
-    """Amount is zero or otherwise invalid."""
+    pass
+
+
+class InvalidDevFeeBpsError(YieldPlayError):
+    pass
 
 
 class InsufficientBalanceError(YieldPlayError):
-    """Token balance is too low for the requested operation."""
+    pass
 
 
 class InsufficientAllowanceError(YieldPlayError):
-    """Token allowance is too low; approve first."""
+    pass
 
 
 class UnauthorizedError(YieldPlayError):
-    """Caller is not authorised to perform this action."""
+    pass
 
 
-# ── Config / SDK errors ───────────────────────────────────────────────────
+class ContractPausedError(YieldPlayError):
+    pass
+
+
+class GameAlreadyExistsError(YieldPlayError):
+    pass
+
+
+class GameNotFoundError(YieldPlayError):
+    pass
+
+
+class RoundNotFoundError(YieldPlayError):
+    pass
+
+
+class FundsNotDeployedError(YieldPlayError):
+    pass
+
+
+class FundsAlreadyWithdrawnError(YieldPlayError):
+    pass
+
+
+class InsufficientPrizePoolError(YieldPlayError):
+    pass
+
+
+# ── Config errors ─────────────────────────────────────────────────────────
 
 
 class SignerNotConfiguredError(YieldPlayError):
-    """Private key was not provided; write operations are unavailable."""
-
     def __init__(self) -> None:
         super().__init__(
             "Signer not configured",
@@ -100,31 +124,83 @@ class SignerNotConfiguredError(YieldPlayError):
         )
 
 
-class ContractPausedError(YieldPlayError):
-    """The YieldPlay contract is currently paused."""
-
-
-# ── Utility ───────────────────────────────────────────────────────────────
-
-
 def map_revert_reason(error_message: str) -> YieldPlayError:
     """
-    Convert a raw revert string / error message from web3
-    into a typed YieldPlayError.
+    Convert a raw revert / custom-error string from web3.py into a typed
+    YieldPlayError.
+
+    web3.py v6 formats custom errors as:
+      ContractCustomError: <ErrorName> [args...]
+    or:
+      execution reverted: <ErrorName>
     """
+    # Normalise — strip web3 prefix noise
+    raw = error_message
     msg = error_message.lower()
 
-    if "roundnotactive" in msg or "round not active" in msg:
-        return RoundNotActiveError("Round is not currently active", error_message)
-    if "invalidamount" in msg or "invalid amount" in msg:
-        return InvalidAmountError("Invalid deposit amount", error_message)
-    if "insufficient" in msg:
-        return InsufficientBalanceError("Insufficient balance", error_message)
-    if "notowner" in msg or "unauthorized" in msg or "onlyowner" in msg:
-        return UnauthorizedError("Caller is not authorised", error_message)
-    if "alreadyclaimed" in msg or "already claimed" in msg:
-        return AlreadyClaimedError("Reward already claimed", error_message)
-    if "paused" in msg:
-        return ContractPausedError("Contract is paused", error_message)
+    # ── Custom error names (exact match first) ────────────────────────────
+    # These come from web3.py as "ContractCustomError: ErrorName ..."
+    custom_map = {
+        "invaliddevfeebps": lambda: InvalidDevFeeBpsError(
+            "dev_fee_bps is out of range (max 5000 = 50%)", raw
+        ),
+        "roundnotactive": lambda: RoundNotActiveError("Round is not active", raw),
+        "roundnotcompleted": lambda: RoundNotChoosingWinnersError(
+            "Round not completed", raw
+        ),
+        "roundnotended": lambda: RoundNotActiveError("Round has not ended yet", raw),
+        "roundnotfound": lambda: RoundNotFoundError("Round not found", raw),
+        "roundnotsettled": lambda: TransactionError(
+            "Round not settled yet", details=raw
+        ),
+        "roundalreadysettled": lambda: TransactionError(
+            "Round already settled", details=raw
+        ),
+        "gamealreadyexists": lambda: GameAlreadyExistsError("Game already exists", raw),
+        "gamenotfound": lambda: GameNotFoundError("Game not found", raw),
+        "alreadyclaimed": lambda: AlreadyClaimedError("Already claimed", raw),
+        "nodeposits": lambda: NoDepositFoundError("No deposits found", raw),
+        "nodepositsound": lambda: NoDepositFoundError("No deposits found", raw),
+        "invalidamount": lambda: InvalidAmountError(
+            "Invalid amount (must be > 0)", raw
+        ),
+        "invalidpaymenttoken": lambda: InvalidAmountError("Invalid payment token", raw),
+        "invalidroundtime": lambda: InvalidAmountError(
+            "Invalid round time parameters", raw
+        ),
+        "fundsnotdeployed": lambda: FundsNotDeployedError(
+            "Funds not deployed to vault", raw
+        ),
+        "fundsalreadywithdrawn": lambda: FundsAlreadyWithdrawnError(
+            "Funds already withdrawn", raw
+        ),
+        "fundsnotwithdrawn": lambda: TransactionError(
+            "Funds not yet withdrawn", details=raw
+        ),
+        "insufficientprizepool": lambda: InsufficientPrizePoolError(
+            "Insufficient prize pool", raw
+        ),
+        "unauthorized": lambda: UnauthorizedError("Caller not authorised", raw),
+        "strategynotset": lambda: TransactionError(
+            "Vault strategy not set", details=raw
+        ),
+        "enforcedpause": lambda: ContractPausedError("Contract is paused", raw),
+        "zeroaddress": lambda: InvalidAmountError("Zero address not allowed", raw),
+        "reentrancyguardreentrantcall": lambda: TransactionError(
+            "Reentrancy detected", details=raw
+        ),
+    }
 
-    return TransactionError("Transaction failed", details=error_message)
+    for key, factory in custom_map.items():
+        if key in msg:
+            return factory()
+
+    # ── Fallback fuzzy matches ────────────────────────────────────────────
+    if "paused" in msg:
+        return ContractPausedError("Contract is paused", raw)
+    if "unauthorized" in msg or "not owner" in msg or "onlyowner" in msg:
+        return UnauthorizedError("Caller not authorised", raw)
+    if "insufficient" in msg:
+        return InsufficientBalanceError("Insufficient balance", raw)
+
+    return TransactionError("Transaction failed", details=raw)

@@ -9,7 +9,7 @@ persists them to the DB via the repository layer.
 Events indexed:
   • GameCreated    (game_id, owner, gameName, devFeeBps, treasury)
   • RoundCreated   (game_id, round_id, paymentToken, vault, ...)
-  • Deposit        (game_id, roundId, user, grossAmount, netAmount, fee)
+    • Deposited     (game_id, roundId, user, amount[gross], depositFee)
   • Claim          (game_id, roundId, user, principal, prize)
   • WinnerChosen   (game_id, roundId, winner, amount)
   • RoundFinalized (game_id, roundId)    → triggers round status refresh
@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from web3 import Web3
@@ -50,85 +50,7 @@ logger = logging.getLogger(__name__)
 
 # ── Extended ABI – events only ─────────────────────────────────────────────
 
-_EVENT_ABI: list[dict[str, Any]] = [
-    {
-        "name": "GameCreated",
-        "type": "event",
-        "inputs": [
-            {"name": "gameId", "type": "bytes32", "indexed": True},
-            {"name": "owner", "type": "address", "indexed": True},
-            {"name": "gameName", "type": "string", "indexed": False},
-            {"name": "devFeeBps", "type": "uint256", "indexed": False},
-            {"name": "treasury", "type": "address", "indexed": False},
-        ],
-    },
-    {
-        "name": "RoundCreated",
-        "type": "event",
-        "inputs": [
-            {"name": "gameId", "type": "bytes32", "indexed": True},
-            {"name": "roundId", "type": "uint256", "indexed": True},
-            {"name": "paymentToken", "type": "address", "indexed": False},
-            {"name": "vault", "type": "address", "indexed": False},
-            {"name": "startTs", "type": "uint256", "indexed": False},
-            {"name": "endTs", "type": "uint256", "indexed": False},
-            {"name": "lockTime", "type": "uint256", "indexed": False},
-            {"name": "depositFeeBps", "type": "uint256", "indexed": False},
-        ],
-    },
-    {
-        "name": "Deposited",
-        "type": "event",
-        "inputs": [
-            {"name": "gameId", "type": "bytes32", "indexed": True},
-            {"name": "roundId", "type": "uint256", "indexed": True},
-            {"name": "user", "type": "address", "indexed": True},
-            {"name": "grossAmount", "type": "uint256", "indexed": False},
-            {"name": "netAmount", "type": "uint256", "indexed": False},
-            {"name": "depositFee", "type": "uint256", "indexed": False},
-        ],
-    },
-    {
-        "name": "Claimed",
-        "type": "event",
-        "inputs": [
-            {"name": "gameId", "type": "bytes32", "indexed": True},
-            {"name": "roundId", "type": "uint256", "indexed": True},
-            {"name": "user", "type": "address", "indexed": True},
-            {"name": "principal", "type": "uint256", "indexed": False},
-            {"name": "prize", "type": "uint256", "indexed": False},
-        ],
-    },
-    {
-        "name": "WinnerChosen",
-        "type": "event",
-        "inputs": [
-            {"name": "gameId", "type": "bytes32", "indexed": True},
-            {"name": "roundId", "type": "uint256", "indexed": True},
-            {"name": "winner", "type": "address", "indexed": True},
-            {"name": "amount", "type": "uint256", "indexed": False},
-        ],
-    },
-    {
-        "name": "RoundFinalized",
-        "type": "event",
-        "inputs": [
-            {"name": "gameId", "type": "bytes32", "indexed": True},
-            {"name": "roundId", "type": "uint256", "indexed": True},
-        ],
-    },
-    {
-        "name": "Settled",
-        "type": "event",
-        "inputs": [
-            {"name": "gameId", "type": "bytes32", "indexed": True},
-            {"name": "roundId", "type": "uint256", "indexed": True},
-            {"name": "yieldAmount", "type": "uint256", "indexed": False},
-            {"name": "performanceFee", "type": "uint256", "indexed": False},
-            {"name": "devFee", "type": "uint256", "indexed": False},
-        ],
-    },
-]
+from yieldplay.abi import YIELD_PLAY_EVENTS_ABI as _EVENT_ABI  # noqa: E402
 
 
 class IndexerConfig:
@@ -210,7 +132,9 @@ class EventIndexer:
     async def _tick(self) -> None:
         async with self._factory() as session:
             state_repo = IndexerStateRepository(session)
-            last_block = await state_repo.get_last_block(self._config.contract_address)
+            last_block = await state_repo.get_last_block(
+                self._config.contract_address
+            )
             from_block = max(last_block + 1, self._config.start_block)
 
             current_block: int = self._client.w3.eth.block_number
@@ -239,13 +163,9 @@ class EventIndexer:
     ) -> None:
         """Fetch all known events in [from_block, to_block] and persist them."""
         event_names = [
-            "GameCreated",
-            "RoundCreated",
-            "Deposited",
-            "Claimed",
-            "WinnerChosen",
-            "RoundFinalized",
-            "Settled",
+            "GameCreated", "RoundCreated", "Deposited",
+            "Claimed", "WinnerChosen", "RoundSettled",
+            "FundsDeployed", "FundsWithdrawn",
         ]
 
         for event_name in event_names:
@@ -262,10 +182,7 @@ class EventIndexer:
                 if logs:
                     logger.info(
                         "  %s: %d events in blocks %d–%d",
-                        event_name,
-                        len(logs),
-                        from_block,
-                        to_block,
+                        event_name, len(logs), from_block, to_block,
                     )
                 for log in logs:
                     await self._handle_event(session, event_name, log)
@@ -300,13 +217,20 @@ class EventIndexer:
         game_repo = GameRepository(session)
 
         if event_name == "GameCreated":
+            game_id_hex = b32hex(args["gameId"])
+            # GameCreated event has no treasury — fetch from contract
+            try:
+                game_info = self._client.get_game(game_id_hex)
+                treasury = game_info.treasury
+            except Exception:
+                treasury = ""   # fallback; will be corrected on next sync
             await game_repo.upsert_game(
                 GameRow(
-                    game_id=b32hex(args["gameId"]),
+                    game_id=game_id_hex,
                     owner=args["owner"],
                     game_name=args["gameName"],
                     dev_fee_bps=int(args["devFeeBps"]),
-                    treasury=args["treasury"],
+                    treasury=treasury,
                     round_counter=0,
                 )
             )
@@ -320,9 +244,9 @@ class EventIndexer:
         elif event_name == "Deposited":
             game_id = b32hex(args["gameId"])
             round_id = int(args["roundId"])
-            gross = int(args["grossAmount"])
-            net = int(args["netAmount"])
+            gross = int(args["amount"])      # 'amount' = gross in this contract
             fee = int(args["depositFee"])
+            net = gross - fee                # net = gross - depositFee
 
             await deposit_repo.upsert_deposit(
                 DepositRow(
@@ -342,9 +266,7 @@ class EventIndexer:
             stats = await deposit_repo.get_round_deposit_stats(game_id, round_id)
             if stats:
                 await self._sync_round(
-                    session,
-                    game_id,
-                    round_id,
+                    session, game_id, round_id,
                     participant_count=stats.participant_count,
                 )
 
@@ -383,8 +305,8 @@ class EventIndexer:
                 )
             )
 
-        elif event_name in ("RoundFinalized", "Settled"):
-            # Refresh the round snapshot from chain
+        elif event_name in ("RoundSettled", "FundsDeployed", "FundsWithdrawn"):
+            # Refresh the round snapshot from chain on any financial event
             await self._sync_round(
                 session,
                 b32hex(args["gameId"]),

@@ -311,6 +311,15 @@ class RoundService:
         round_id: int,
         hypothetical_yield_wei: Optional[int] = None,
     ) -> FeeBreakdown:
+        """
+        Fee breakdown using real vault yield when available.
+
+        Priority for yield source:
+          1. hypothetical_yield_wei (caller override — for simulations)
+          2. On-chain yieldAmount (set after settlement)
+          3. vault.previewRedeem(shares) - deployedAmount (live accrual mid-round)
+          4. 0 (vault not yet deployed)
+        """
         db_round = await self._round_repo.get_round(game_id, round_id)
         db_game = await self._game_repo.get_game(game_id)
 
@@ -318,14 +327,26 @@ class RoundService:
             deposit_fee_bps = db_round.deposit_fee_bps
             dev_fee_bps = db_game.dev_fee_bps
             total_deposit = int(db_round.total_deposit)
-            yield_to_use = hypothetical_yield_wei if hypothetical_yield_wei is not None else int(db_round.yield_amount)
+            settled_yield = int(db_round.yield_amount)
         else:
             round_info = self._c.get_round(game_id, round_id)
             game_info = self._c.get_game(game_id)
             deposit_fee_bps = round_info.deposit_fee_bps
             dev_fee_bps = game_info.dev_fee_bps
             total_deposit = round_info.total_deposit
-            yield_to_use = hypothetical_yield_wei if hypothetical_yield_wei is not None else round_info.yield_amount
+            settled_yield = round_info.yield_amount
+
+        if hypothetical_yield_wei is not None:
+            yield_to_use = hypothetical_yield_wei
+        elif settled_yield > 0:
+            # Post-settlement: use the exact on-chain value
+            yield_to_use = settled_yield
+        else:
+            # Mid-round: query vault directly for live accrued yield
+            try:
+                yield_to_use = self._c.get_projected_yield(game_id, round_id)
+            except Exception:
+                yield_to_use = 0  # vault not deployed yet
 
         return YieldPlayContract.calculate_fee_breakdown(
             total_deposit_gross=total_deposit,

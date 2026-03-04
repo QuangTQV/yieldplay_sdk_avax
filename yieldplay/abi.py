@@ -1,890 +1,295 @@
 """
 yieldplay/abi.py
 ────────────────
-ABI definitions for YieldPlay contract and ERC-20 token.
-Structs are represented as ABI tuples with named components.
+ABI lấy trực tiếp từ artifact Hardhat – YieldPlay.sol.
 """
-
 from __future__ import annotations
-
 from typing import Any
 
-# ── YieldPlay main contract ABI ───────────────────────────────────────────
-
 YIELD_PLAY_ABI: list[dict[str, Any]] = [
+    # ── Constants ────────────────────────────────────────────────────────
+    {"name": "BPS_DENOMINATOR", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"name": "", "type": "uint256"}]},
+    {"name": "PERFORMANCE_FEE_BPS", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"name": "", "type": "uint256"}]},
+
+    # ── Pure / view ──────────────────────────────────────────────────────
+    {"name": "calculateGameId", "type": "function", "stateMutability": "pure",
+     "inputs": [{"name": "owner", "type": "address"}, {"name": "gameName", "type": "string"}],
+     "outputs": [{"name": "", "type": "bytes32"}]},
+
+    {"name": "getCurrentStatus", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "gameId", "type": "bytes32"}, {"name": "roundId", "type": "uint256"}],
+     "outputs": [{"name": "", "type": "uint8"}]},
+
+    {"name": "getGame", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "gameId", "type": "bytes32"}],
+     "outputs": [{"name": "", "type": "tuple", "components": [
+         {"name": "owner",        "type": "address"},
+         {"name": "gameName",     "type": "string"},
+         {"name": "devFeeBps",    "type": "uint16"},   # uint16 not uint256
+         {"name": "treasury",     "type": "address"},
+         {"name": "roundCounter", "type": "uint256"},
+         {"name": "initialized",  "type": "bool"},
+     ]}]},
+
+    {"name": "getRound", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "gameId", "type": "bytes32"}, {"name": "roundId", "type": "uint256"}],
+     "outputs": [{"name": "", "type": "tuple", "components": [
+         {"name": "gameId",        "type": "bytes32"},
+         {"name": "roundId",       "type": "uint256"},
+         {"name": "totalDeposit",  "type": "uint256"},
+         {"name": "bonusPrizePool","type": "uint256"},
+         {"name": "devFee",        "type": "uint256"},
+         {"name": "totalWin",      "type": "uint256"},
+         {"name": "yieldAmount",   "type": "uint256"},
+         {"name": "paymentToken",  "type": "address"},
+         {"name": "vault",         "type": "address"},
+         {"name": "depositFeeBps", "type": "uint16"},  # uint16
+         {"name": "startTs",       "type": "uint64"},  # uint64
+         {"name": "endTs",         "type": "uint64"},  # uint64
+         {"name": "lockTime",      "type": "uint64"},  # uint64
+         {"name": "initialized",   "type": "bool"},
+         {"name": "isSettled",     "type": "bool"},
+         {"name": "status",        "type": "uint8"},
+         {"name": "isWithdrawn",   "type": "bool"},
+     ]}]},
+
+    {"name": "getUserDeposit", "type": "function", "stateMutability": "view",
+     "inputs": [
+         {"name": "gameId", "type": "bytes32"},
+         {"name": "roundId", "type": "uint256"},
+         {"name": "user", "type": "address"},
+     ],
+     "outputs": [{"name": "", "type": "tuple", "components": [
+         {"name": "depositAmount", "type": "uint256"},
+         {"name": "amountToClaim", "type": "uint256"},
+         {"name": "isClaimed",     "type": "bool"},
+         {"name": "exists",        "type": "bool"},
+     ]}]},
+
+    # ── Public state variables (accessed as functions) ───────────────────
+    # NOTE: these are public mappings/variables — not getter functions we invented
+    {"name": "vaults", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "", "type": "address"}],
+     "outputs": [{"name": "", "type": "address"}]},
+
+    {"name": "protocolTreasury", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"name": "", "type": "address"}]},
+
+    {"name": "deployedAmounts", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "", "type": "bytes32"}, {"name": "", "type": "uint256"}],
+     "outputs": [{"name": "", "type": "uint256"}]},
+
+    {"name": "deployedShares", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "", "type": "bytes32"}, {"name": "", "type": "uint256"}],
+     "outputs": [{"name": "", "type": "uint256"}]},
+
+    {"name": "paused", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"name": "", "type": "bool"}]},
+
+    {"name": "owner", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"name": "", "type": "address"}]},
+
+    # ── Write: user ──────────────────────────────────────────────────────
+    {"name": "deposit", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [
+         {"name": "gameId", "type": "bytes32"},
+         {"name": "roundId", "type": "uint256"},
+         {"name": "amount", "type": "uint256"},
+     ], "outputs": []},
+
+    {"name": "claim", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [
+         {"name": "gameId", "type": "bytes32"},
+         {"name": "roundId", "type": "uint256"},
+     ], "outputs": []},
+
+    # ── Write: game management ───────────────────────────────────────────
+    # createGame returns bytes32 gameId DIRECTLY (not via event)
+    {"name": "createGame", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [
+         {"name": "gameName",  "type": "string"},
+         {"name": "devFeeBps", "type": "uint16"},   # uint16
+         {"name": "treasury",  "type": "address"},
+     ],
+     "outputs": [{"name": "gameId", "type": "bytes32"}]},
+
+    # createRound returns uint256 roundId DIRECTLY
+    {"name": "createRound", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [
+         {"name": "gameId",        "type": "bytes32"},
+         {"name": "startTs",       "type": "uint64"},   # uint64
+         {"name": "endTs",         "type": "uint64"},   # uint64
+         {"name": "lockTime",      "type": "uint64"},   # uint64
+         {"name": "depositFeeBps", "type": "uint16"},   # uint16
+         {"name": "paymentToken",  "type": "address"},
+     ],
+     "outputs": [{"name": "roundId", "type": "uint256"}]},
+
+    # ── Write: vault lifecycle ───────────────────────────────────────────
+    {"name": "depositToVault", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "gameId", "type": "bytes32"}, {"name": "roundId", "type": "uint256"}],
+     "outputs": []},
+
+    {"name": "withdrawFromVault", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "gameId", "type": "bytes32"}, {"name": "roundId", "type": "uint256"}],
+     "outputs": []},
+
+    {"name": "settlement", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "gameId", "type": "bytes32"}, {"name": "roundId", "type": "uint256"}],
+     "outputs": []},
+
+    {"name": "chooseWinner", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [
+         {"name": "gameId",  "type": "bytes32"},
+         {"name": "roundId", "type": "uint256"},
+         {"name": "winner",  "type": "address"},
+         {"name": "amount",  "type": "uint256"},
+     ], "outputs": []},
+
+    {"name": "finalizeRound", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "gameId", "type": "bytes32"}, {"name": "roundId", "type": "uint256"}],
+     "outputs": []},
+
+    {"name": "updateRoundStatus", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "gameId", "type": "bytes32"}, {"name": "roundId", "type": "uint256"}],
+     "outputs": []},
+
+    # ── Admin ────────────────────────────────────────────────────────────
+    {"name": "setVault", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "token", "type": "address"}, {"name": "vault", "type": "address"}],
+     "outputs": []},
+
+    {"name": "setProtocolTreasury", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "newTreasury", "type": "address"}],
+     "outputs": []},
+
+    {"name": "pause",   "type": "function", "stateMutability": "nonpayable",
+     "inputs": [], "outputs": []},
+    {"name": "unpause", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [], "outputs": []},
+
+    {"name": "transferOwnership", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "newOwner", "type": "address"}], "outputs": []},
+    {"name": "renounceOwnership", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [], "outputs": []},
+]
+
+# ── Events ABI (used by indexer only) ─────────────────────────────────────
+# Taken verbatim from the artifact — do not edit manually.
+
+YIELD_PLAY_EVENTS_ABI: list[dict[str, Any]] = [
     {
+        "name": "GameCreated", "type": "event", "anonymous": False,
         "inputs": [
-            {"internalType": "address", "name": "_protocolTreasury", "type": "address"}
+            {"indexed": True,  "name": "gameId",    "type": "bytes32"},
+            {"indexed": True,  "name": "owner",     "type": "address"},
+            {"indexed": False, "name": "gameName",  "type": "string"},
+            # NOTE: no treasury in this event — fetch from getGame() if needed
+            {"indexed": False, "name": "devFeeBps", "type": "uint16"},
         ],
-        "stateMutability": "nonpayable",
-        "type": "constructor",
-    },
-    {"inputs": [], "name": "AlreadyClaimed", "type": "error"},
-    {"inputs": [], "name": "EnforcedPause", "type": "error"},
-    {"inputs": [], "name": "ExpectedPause", "type": "error"},
-    {"inputs": [], "name": "FundsAlreadyWithdrawn", "type": "error"},
-    {"inputs": [], "name": "FundsNotDeployed", "type": "error"},
-    {"inputs": [], "name": "FundsNotWithdrawn", "type": "error"},
-    {"inputs": [], "name": "GameAlreadyExists", "type": "error"},
-    {"inputs": [], "name": "GameNotFound", "type": "error"},
-    {"inputs": [], "name": "InsufficientPrizePool", "type": "error"},
-    {"inputs": [], "name": "InvalidAmount", "type": "error"},
-    {"inputs": [], "name": "InvalidDevFeeBps", "type": "error"},
-    {"inputs": [], "name": "InvalidPaymentToken", "type": "error"},
-    {"inputs": [], "name": "InvalidRoundTime", "type": "error"},
-    {"inputs": [], "name": "NoDepositsFound", "type": "error"},
-    {
-        "inputs": [{"internalType": "address", "name": "owner", "type": "address"}],
-        "name": "OwnableInvalidOwner",
-        "type": "error",
     },
     {
-        "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
-        "name": "OwnableUnauthorizedAccount",
-        "type": "error",
-    },
-    {"inputs": [], "name": "ReentrancyGuardReentrantCall", "type": "error"},
-    {"inputs": [], "name": "RoundAlreadySettled", "type": "error"},
-    {"inputs": [], "name": "RoundNotActive", "type": "error"},
-    {"inputs": [], "name": "RoundNotCompleted", "type": "error"},
-    {"inputs": [], "name": "RoundNotEnded", "type": "error"},
-    {"inputs": [], "name": "RoundNotFound", "type": "error"},
-    {"inputs": [], "name": "RoundNotSettled", "type": "error"},
-    {
-        "inputs": [{"internalType": "address", "name": "token", "type": "address"}],
-        "name": "SafeERC20FailedOperation",
-        "type": "error",
-    },
-    {"inputs": [], "name": "StrategyNotSet", "type": "error"},
-    {"inputs": [], "name": "Unauthorized", "type": "error"},
-    {"inputs": [], "name": "ZeroAddress", "type": "error"},
-    {
-        "anonymous": False,
+        "name": "RoundCreated", "type": "event", "anonymous": False,
         "inputs": [
-            {
-                "indexed": True,
-                "internalType": "bytes32",
-                "name": "gameId",
-                "type": "bytes32",
-            },
-            {
-                "indexed": True,
-                "internalType": "uint256",
-                "name": "roundId",
-                "type": "uint256",
-            },
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "user",
-                "type": "address",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "principal",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "prize",
-                "type": "uint256",
-            },
+            {"indexed": True,  "name": "gameId",        "type": "bytes32"},
+            {"indexed": True,  "name": "roundId",       "type": "uint256"},
+            {"indexed": False, "name": "startTs",       "type": "uint64"},
+            {"indexed": False, "name": "endTs",         "type": "uint64"},
+            {"indexed": False, "name": "lockTime",      "type": "uint64"},
+            {"indexed": False, "name": "depositFeeBps", "type": "uint16"},
+            {"indexed": False, "name": "paymentToken",  "type": "address"},
+            {"indexed": False, "name": "vault",         "type": "address"},
         ],
-        "name": "Claimed",
-        "type": "event",
     },
     {
-        "anonymous": False,
+        # 'amount' = gross deposit before fee (NOT split into gross/net)
+        "name": "Deposited", "type": "event", "anonymous": False,
         "inputs": [
-            {
-                "indexed": True,
-                "internalType": "bytes32",
-                "name": "gameId",
-                "type": "bytes32",
-            },
-            {
-                "indexed": True,
-                "internalType": "uint256",
-                "name": "roundId",
-                "type": "uint256",
-            },
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "user",
-                "type": "address",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "amount",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "depositFee",
-                "type": "uint256",
-            },
+            {"indexed": True,  "name": "gameId",     "type": "bytes32"},
+            {"indexed": True,  "name": "roundId",    "type": "uint256"},
+            {"indexed": True,  "name": "user",       "type": "address"},
+            {"indexed": False, "name": "amount",     "type": "uint256"},
+            {"indexed": False, "name": "depositFee", "type": "uint256"},
         ],
-        "name": "Deposited",
-        "type": "event",
     },
     {
-        "anonymous": False,
+        "name": "Claimed", "type": "event", "anonymous": False,
         "inputs": [
-            {
-                "indexed": True,
-                "internalType": "bytes32",
-                "name": "gameId",
-                "type": "bytes32",
-            },
-            {
-                "indexed": True,
-                "internalType": "uint256",
-                "name": "roundId",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "amount",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "shares",
-                "type": "uint256",
-            },
+            {"indexed": True,  "name": "gameId",    "type": "bytes32"},
+            {"indexed": True,  "name": "roundId",   "type": "uint256"},
+            {"indexed": True,  "name": "user",      "type": "address"},
+            {"indexed": False, "name": "principal", "type": "uint256"},
+            {"indexed": False, "name": "prize",     "type": "uint256"},
         ],
-        "name": "FundsDeployed",
-        "type": "event",
     },
     {
-        "anonymous": False,
+        "name": "WinnerChosen", "type": "event", "anonymous": False,
         "inputs": [
-            {
-                "indexed": True,
-                "internalType": "bytes32",
-                "name": "gameId",
-                "type": "bytes32",
-            },
-            {
-                "indexed": True,
-                "internalType": "uint256",
-                "name": "roundId",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "principal",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "yield",
-                "type": "uint256",
-            },
+            {"indexed": True,  "name": "gameId",  "type": "bytes32"},
+            {"indexed": True,  "name": "roundId", "type": "uint256"},
+            {"indexed": True,  "name": "winner",  "type": "address"},
+            {"indexed": False, "name": "amount",  "type": "uint256"},
         ],
-        "name": "FundsWithdrawn",
-        "type": "event",
     },
     {
-        "anonymous": False,
+        # Named RoundSettled in contract (not Settled)
+        "name": "RoundSettled", "type": "event", "anonymous": False,
         "inputs": [
-            {
-                "indexed": True,
-                "internalType": "bytes32",
-                "name": "gameId",
-                "type": "bytes32",
-            },
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "owner",
-                "type": "address",
-            },
-            {
-                "indexed": False,
-                "internalType": "string",
-                "name": "gameName",
-                "type": "string",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint16",
-                "name": "devFeeBps",
-                "type": "uint16",
-            },
+            {"indexed": True,  "name": "gameId",         "type": "bytes32"},
+            {"indexed": True,  "name": "roundId",        "type": "uint256"},
+            {"indexed": False, "name": "totalYield",     "type": "uint256"},
+            {"indexed": False, "name": "performanceFee", "type": "uint256"},
+            {"indexed": False, "name": "devFee",         "type": "uint256"},
+            {"indexed": False, "name": "prizePool",      "type": "uint256"},
         ],
-        "name": "GameCreated",
-        "type": "event",
     },
     {
-        "anonymous": False,
+        "name": "FundsDeployed", "type": "event", "anonymous": False,
         "inputs": [
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "previousOwner",
-                "type": "address",
-            },
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "newOwner",
-                "type": "address",
-            },
+            {"indexed": True,  "name": "gameId",  "type": "bytes32"},
+            {"indexed": True,  "name": "roundId", "type": "uint256"},
+            {"indexed": False, "name": "amount",  "type": "uint256"},
+            {"indexed": False, "name": "shares",  "type": "uint256"},
         ],
-        "name": "OwnershipTransferred",
-        "type": "event",
     },
     {
-        "anonymous": False,
+        "name": "FundsWithdrawn", "type": "event", "anonymous": False,
         "inputs": [
-            {
-                "indexed": False,
-                "internalType": "address",
-                "name": "account",
-                "type": "address",
-            }
+            {"indexed": True,  "name": "gameId",    "type": "bytes32"},
+            {"indexed": True,  "name": "roundId",   "type": "uint256"},
+            {"indexed": False, "name": "principal", "type": "uint256"},
+            {"indexed": False, "name": "yield",     "type": "uint256"},
         ],
-        "name": "Paused",
-        "type": "event",
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "newTreasury",
-                "type": "address",
-            }
-        ],
-        "name": "ProtocolTreasuryUpdated",
-        "type": "event",
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {
-                "indexed": True,
-                "internalType": "bytes32",
-                "name": "gameId",
-                "type": "bytes32",
-            },
-            {
-                "indexed": True,
-                "internalType": "uint256",
-                "name": "roundId",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint64",
-                "name": "startTs",
-                "type": "uint64",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint64",
-                "name": "endTs",
-                "type": "uint64",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint64",
-                "name": "lockTime",
-                "type": "uint64",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint16",
-                "name": "depositFeeBps",
-                "type": "uint16",
-            },
-            {
-                "indexed": False,
-                "internalType": "address",
-                "name": "paymentToken",
-                "type": "address",
-            },
-            {
-                "indexed": False,
-                "internalType": "address",
-                "name": "vault",
-                "type": "address",
-            },
-        ],
-        "name": "RoundCreated",
-        "type": "event",
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {
-                "indexed": True,
-                "internalType": "bytes32",
-                "name": "gameId",
-                "type": "bytes32",
-            },
-            {
-                "indexed": True,
-                "internalType": "uint256",
-                "name": "roundId",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "totalYield",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "performanceFee",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "devFee",
-                "type": "uint256",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "prizePool",
-                "type": "uint256",
-            },
-        ],
-        "name": "RoundSettled",
-        "type": "event",
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {
-                "indexed": False,
-                "internalType": "address",
-                "name": "account",
-                "type": "address",
-            }
-        ],
-        "name": "Unpaused",
-        "type": "event",
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "token",
-                "type": "address",
-            },
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "vault",
-                "type": "address",
-            },
-        ],
-        "name": "VaultUpdated",
-        "type": "event",
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {
-                "indexed": True,
-                "internalType": "bytes32",
-                "name": "gameId",
-                "type": "bytes32",
-            },
-            {
-                "indexed": True,
-                "internalType": "uint256",
-                "name": "roundId",
-                "type": "uint256",
-            },
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "winner",
-                "type": "address",
-            },
-            {
-                "indexed": False,
-                "internalType": "uint256",
-                "name": "amount",
-                "type": "uint256",
-            },
-        ],
-        "name": "WinnerChosen",
-        "type": "event",
-    },
-    {
-        "inputs": [],
-        "name": "BPS_DENOMINATOR",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [],
-        "name": "PERFORMANCE_FEE_BPS",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "owner", "type": "address"},
-            {"internalType": "string", "name": "gameName", "type": "string"},
-        ],
-        "name": "calculateGameId",
-        "outputs": [{"internalType": "bytes32", "name": "", "type": "bytes32"}],
-        "stateMutability": "pure",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-            {"internalType": "address", "name": "winner", "type": "address"},
-            {"internalType": "uint256", "name": "amount", "type": "uint256"},
-        ],
-        "name": "chooseWinner",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-        ],
-        "name": "claim",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "string", "name": "gameName", "type": "string"},
-            {"internalType": "uint16", "name": "devFeeBps", "type": "uint16"},
-            {"internalType": "address", "name": "treasury", "type": "address"},
-        ],
-        "name": "createGame",
-        "outputs": [{"internalType": "bytes32", "name": "gameId", "type": "bytes32"}],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint64", "name": "startTs", "type": "uint64"},
-            {"internalType": "uint64", "name": "endTs", "type": "uint64"},
-            {"internalType": "uint64", "name": "lockTime", "type": "uint64"},
-            {"internalType": "uint16", "name": "depositFeeBps", "type": "uint16"},
-            {"internalType": "address", "name": "paymentToken", "type": "address"},
-        ],
-        "name": "createRound",
-        "outputs": [{"internalType": "uint256", "name": "roundId", "type": "uint256"}],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "", "type": "bytes32"},
-            {"internalType": "uint256", "name": "", "type": "uint256"},
-        ],
-        "name": "deployedAmounts",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "", "type": "bytes32"},
-            {"internalType": "uint256", "name": "", "type": "uint256"},
-        ],
-        "name": "deployedShares",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-            {"internalType": "uint256", "name": "amount", "type": "uint256"},
-        ],
-        "name": "deposit",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-        ],
-        "name": "depositToVault",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-        ],
-        "name": "finalizeRound",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "bytes32", "name": "", "type": "bytes32"}],
-        "name": "games",
-        "outputs": [
-            {"internalType": "address", "name": "owner", "type": "address"},
-            {"internalType": "string", "name": "gameName", "type": "string"},
-            {"internalType": "uint16", "name": "devFeeBps", "type": "uint16"},
-            {"internalType": "address", "name": "treasury", "type": "address"},
-            {"internalType": "uint256", "name": "roundCounter", "type": "uint256"},
-            {"internalType": "bool", "name": "initialized", "type": "bool"},
-        ],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-        ],
-        "name": "getCurrentStatus",
-        "outputs": [{"internalType": "enum RoundStatus", "name": "", "type": "uint8"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "bytes32", "name": "gameId", "type": "bytes32"}],
-        "name": "getGame",
-        "outputs": [
-            {
-                "components": [
-                    {"internalType": "address", "name": "owner", "type": "address"},
-                    {"internalType": "string", "name": "gameName", "type": "string"},
-                    {"internalType": "uint16", "name": "devFeeBps", "type": "uint16"},
-                    {"internalType": "address", "name": "treasury", "type": "address"},
-                    {
-                        "internalType": "uint256",
-                        "name": "roundCounter",
-                        "type": "uint256",
-                    },
-                    {"internalType": "bool", "name": "initialized", "type": "bool"},
-                ],
-                "internalType": "struct Game",
-                "name": "",
-                "type": "tuple",
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-        ],
-        "name": "getRound",
-        "outputs": [
-            {
-                "components": [
-                    {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-                    {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-                    {
-                        "internalType": "uint256",
-                        "name": "totalDeposit",
-                        "type": "uint256",
-                    },
-                    {
-                        "internalType": "uint256",
-                        "name": "bonusPrizePool",
-                        "type": "uint256",
-                    },
-                    {"internalType": "uint256", "name": "devFee", "type": "uint256"},
-                    {"internalType": "uint256", "name": "totalWin", "type": "uint256"},
-                    {
-                        "internalType": "uint256",
-                        "name": "yieldAmount",
-                        "type": "uint256",
-                    },
-                    {
-                        "internalType": "address",
-                        "name": "paymentToken",
-                        "type": "address",
-                    },
-                    {"internalType": "address", "name": "vault", "type": "address"},
-                    {
-                        "internalType": "uint16",
-                        "name": "depositFeeBps",
-                        "type": "uint16",
-                    },
-                    {"internalType": "uint64", "name": "startTs", "type": "uint64"},
-                    {"internalType": "uint64", "name": "endTs", "type": "uint64"},
-                    {"internalType": "uint64", "name": "lockTime", "type": "uint64"},
-                    {"internalType": "bool", "name": "initialized", "type": "bool"},
-                    {"internalType": "bool", "name": "isSettled", "type": "bool"},
-                    {
-                        "internalType": "enum RoundStatus",
-                        "name": "status",
-                        "type": "uint8",
-                    },
-                    {"internalType": "bool", "name": "isWithdrawn", "type": "bool"},
-                ],
-                "internalType": "struct Round",
-                "name": "",
-                "type": "tuple",
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-            {"internalType": "address", "name": "user", "type": "address"},
-        ],
-        "name": "getUserDeposit",
-        "outputs": [
-            {
-                "components": [
-                    {
-                        "internalType": "uint256",
-                        "name": "depositAmount",
-                        "type": "uint256",
-                    },
-                    {
-                        "internalType": "uint256",
-                        "name": "amountToClaim",
-                        "type": "uint256",
-                    },
-                    {"internalType": "bool", "name": "isClaimed", "type": "bool"},
-                    {"internalType": "bool", "name": "exists", "type": "bool"},
-                ],
-                "internalType": "struct UserDeposit",
-                "name": "",
-                "type": "tuple",
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [],
-        "name": "owner",
-        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [],
-        "name": "pause",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [],
-        "name": "paused",
-        "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [],
-        "name": "protocolTreasury",
-        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [],
-        "name": "renounceOwnership",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "", "type": "bytes32"},
-            {"internalType": "uint256", "name": "", "type": "uint256"},
-        ],
-        "name": "rounds",
-        "outputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-            {"internalType": "uint256", "name": "totalDeposit", "type": "uint256"},
-            {"internalType": "uint256", "name": "bonusPrizePool", "type": "uint256"},
-            {"internalType": "uint256", "name": "devFee", "type": "uint256"},
-            {"internalType": "uint256", "name": "totalWin", "type": "uint256"},
-            {"internalType": "uint256", "name": "yieldAmount", "type": "uint256"},
-            {"internalType": "address", "name": "paymentToken", "type": "address"},
-            {"internalType": "address", "name": "vault", "type": "address"},
-            {"internalType": "uint16", "name": "depositFeeBps", "type": "uint16"},
-            {"internalType": "uint64", "name": "startTs", "type": "uint64"},
-            {"internalType": "uint64", "name": "endTs", "type": "uint64"},
-            {"internalType": "uint64", "name": "lockTime", "type": "uint64"},
-            {"internalType": "bool", "name": "initialized", "type": "bool"},
-            {"internalType": "bool", "name": "isSettled", "type": "bool"},
-            {"internalType": "enum RoundStatus", "name": "status", "type": "uint8"},
-            {"internalType": "bool", "name": "isWithdrawn", "type": "bool"},
-        ],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "newTreasury", "type": "address"}
-        ],
-        "name": "setProtocolTreasury",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "token", "type": "address"},
-            {"internalType": "address", "name": "vault", "type": "address"},
-        ],
-        "name": "setVault",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-        ],
-        "name": "settlement",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "address", "name": "newOwner", "type": "address"}],
-        "name": "transferOwnership",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [],
-        "name": "unpause",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-        ],
-        "name": "updateRoundStatus",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "", "type": "bytes32"},
-            {"internalType": "uint256", "name": "", "type": "uint256"},
-            {"internalType": "address", "name": "", "type": "address"},
-        ],
-        "name": "userDeposits",
-        "outputs": [
-            {"internalType": "uint256", "name": "depositAmount", "type": "uint256"},
-            {"internalType": "uint256", "name": "amountToClaim", "type": "uint256"},
-            {"internalType": "bool", "name": "isClaimed", "type": "bool"},
-            {"internalType": "bool", "name": "exists", "type": "bool"},
-        ],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "address", "name": "", "type": "address"}],
-        "name": "vaults",
-        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [
-            {"internalType": "bytes32", "name": "gameId", "type": "bytes32"},
-            {"internalType": "uint256", "name": "roundId", "type": "uint256"},
-        ],
-        "name": "withdrawFromVault",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function",
     },
 ]
 
-# ── Minimal ERC-20 ABI (only what YieldPlay SDK needs) ────────────────────
+# ── ERC-20 minimal ─────────────────────────────────────────────────────────
 
 ERC20_ABI: list[dict[str, Any]] = [
-    {
-        "name": "balanceOf",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [{"name": "account", "type": "address"}],
-        "outputs": [{"name": "", "type": "uint256"}],
-    },
-    {
-        "name": "allowance",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [
-            {"name": "owner", "type": "address"},
-            {"name": "spender", "type": "address"},
-        ],
-        "outputs": [{"name": "", "type": "uint256"}],
-    },
-    {
-        "name": "approve",
-        "type": "function",
-        "stateMutability": "nonpayable",
-        "inputs": [
-            {"name": "spender", "type": "address"},
-            {"name": "amount", "type": "uint256"},
-        ],
-        "outputs": [{"name": "", "type": "bool"}],
-    },
-    {
-        "name": "decimals",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "uint8"}],
-    },
-    {
-        "name": "symbol",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "string"}],
-    },
+    {"name": "balanceOf", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "account", "type": "address"}],
+     "outputs": [{"name": "", "type": "uint256"}]},
+    {"name": "allowance", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "owner", "type": "address"}, {"name": "spender", "type": "address"}],
+     "outputs": [{"name": "", "type": "uint256"}]},
+    {"name": "approve", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "spender", "type": "address"}, {"name": "amount", "type": "uint256"}],
+     "outputs": [{"name": "", "type": "bool"}]},
+    {"name": "decimals", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"name": "", "type": "uint8"}]},
+    {"name": "symbol", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"name": "", "type": "string"}]},
+]
+
+# ── ERC-4626 (for projected yield) ────────────────────────────────────────
+
+ERC4626_ABI: list[dict[str, Any]] = [
+    {"name": "previewRedeem", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "shares", "type": "uint256"}],
+     "outputs": [{"name": "", "type": "uint256"}]},
+    {"name": "convertToAssets", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "shares", "type": "uint256"}],
+     "outputs": [{"name": "", "type": "uint256"}]},
 ]

@@ -17,8 +17,9 @@ from functools import lru_cache
 from typing import Annotated, AsyncIterator
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
+from web3.exceptions import BadFunctionCallOutput, ContractCustomError
 
 from yieldplay.api.services.round_service import RoundService
 from yieldplay.api.services.user_service import UserService
@@ -32,7 +33,6 @@ from yieldplay.exceptions import (
 )
 from yieldplay.types import SDKConfig
 
-
 # ── Settings ───────────────────────────────────────────────────────────────
 
 
@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     yieldplay_address: str = "0x02AA158dc37f4E1128CeE3E69e9E59920E799F90"
     rpc_url: str = "https://ethereum-sepolia-rpc.publicnode.com"
     private_key: str = ""
-    database_url: str = "postgresql+asyncpg://yieldplay:password@localhost:5432/yieldplay"
+    database_url: str = (
+        "postgresql+asyncpg://yieldplay:password@localhost:5432/yieldplay"
+    )
     indexer_poll_interval: float = 12.0
     indexer_start_block: int = 0
     indexer_confirmations: int = 2
@@ -101,15 +103,32 @@ RoundServiceDep = Annotated[RoundService, Depends(get_round_service)]
 
 
 def handle_sdk_error(exc: Exception) -> HTTPException:
+    import logging
+
+    _log = logging.getLogger(__name__)
+    _log.error("SDK error [%s]: %s", type(exc).__name__, exc, exc_info=True)
+
+    # web3 decode failure — usually means contract reverted with custom error
+    if isinstance(exc, (BadFunctionCallOutput, ContractCustomError)):
+        return HTTPException(
+            status.HTTP_400_BAD_REQUEST, detail=f"Contract call failed: {exc}"
+        )
     if isinstance(exc, SignerNotConfiguredError):
         return HTTPException(status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc))
     if isinstance(exc, ContractCallError):
-        return HTTPException(status.HTTP_502_BAD_GATEWAY,
-                             detail=f"Contract read error: {exc.details or str(exc)}")
+        return HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            detail=f"Contract read error: {exc.details or str(exc)}",
+        )
     if isinstance(exc, TransactionError):
-        return HTTPException(status.HTTP_400_BAD_REQUEST,
-                             detail=f"Transaction error: {exc.details or str(exc)}")
-    if isinstance(exc, YieldPlayError):
+        # TransactionRevertedError is a subclass — detail shows the revert reason
         return HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                         detail="Internal server error")
+    if isinstance(exc, YieldPlayError):
+        # All other business errors (InvalidDevFeeBps, AlreadyClaimed, etc.)
+        return HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    # Unexpected — log full traceback, return 500
+    _log.error("Unhandled exception in route", exc_info=True)
+    return HTTPException(
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"Internal error: {type(exc).__name__}: {exc}",
+    )
