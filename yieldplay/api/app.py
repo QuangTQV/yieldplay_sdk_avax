@@ -1,14 +1,17 @@
 """
 yieldplay/api/app.py – FastAPI application factory with indexer lifecycle.
 """
+
 from __future__ import annotations
+
 import asyncio
 import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from yieldplay.api.routes import games, rounds, users
+from yieldplay.api.routes import games, rounds, tx, users
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(games.router, prefix="/api/v1")
     app.include_router(rounds.router, prefix="/api/v1")
     app.include_router(users.router, prefix="/api/v1")
+    app.include_router(tx.router, prefix="/api/v1")
 
     # ── Health ─────────────────────────────────────────────────────────────
 
@@ -49,16 +53,19 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/protocol", tags=["Meta"])
     async def protocol_info() -> JSONResponse:
         from yieldplay.api.deps import get_sdk
+
         sdk = get_sdk()
         try:
-            return JSONResponse({
-                "contract_address": sdk._config.yield_play_address,
-                "rpc_url": sdk._config.rpc_url,
-                "is_paused": sdk.is_paused(),
-                "protocol_treasury": sdk.get_protocol_treasury(),
-                "performance_fee_bps": 2000,
-                "performance_fee_pct": "20%",
-            })
+            return JSONResponse(
+                {
+                    "contract_address": sdk._config.yield_play_address,
+                    "rpc_url": sdk._config.rpc_url,
+                    "is_paused": sdk.is_paused(),
+                    "protocol_treasury": sdk.get_protocol_treasury(),
+                    "performance_fee_bps": 2000,
+                    "performance_fee_pct": "20%",
+                }
+            )
         except Exception as exc:
             logger.warning("protocol_info error: %s", exc)
             return JSONResponse({"contract_address": sdk._config.yield_play_address})
@@ -75,10 +82,13 @@ def create_app() -> FastAPI:
         # Initialise DB tables (idempotent – safe in production if using Alembic)
         try:
             from yieldplay.db.base import create_all_tables
+
             await create_all_tables()
             logger.info("DB tables ready")
         except Exception as exc:
-            logger.warning("Could not create DB tables (DB may not be available): %s", exc)
+            logger.warning(
+                "Could not create DB tables (DB may not be available): %s", exc
+            )
             return
 
         # Start event indexer as background task

@@ -11,8 +11,6 @@ Provides:
   • handle_sdk_error()  → maps domain exceptions → HTTPException
 """
 
-from __future__ import annotations
-
 from functools import lru_cache
 from typing import Annotated, AsyncIterator
 

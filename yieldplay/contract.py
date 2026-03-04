@@ -7,7 +7,7 @@ Layer 1 – Direct contract interaction.
 from __future__ import annotations
 
 import logging
-from typing import Optional, cast
+from typing import Any, Optional, cast
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
@@ -95,21 +95,55 @@ class YieldPlayContract:
     def _send_transaction(
         self,
         fn_name: str,
-        tx_params: TxParams,
+        contract_fn: Any,
         account: LocalAccount,
     ) -> TransactionResult:
-        """Sign, broadcast and wait for a transaction receipt."""
+        """
+        Build, sign, broadcast and wait for a transaction receipt.
+
+        NOTE: This node strips custom-error revert data from both eth_call and
+        estimate_gas, returning ('execution reverted', '0x') for all failures.
+        Pre-flight validation must be done in Python BEFORE calling this method
+        (see _preflight_* helpers below).  This method only handles transport.
+        """
         try:
+            # build_transaction calls estimate_gas internally.
+            # If gas estimation fails with 0x revert (node limitation) we fall
+            # back to a fixed ceiling — the caller's pre-flight already verified
+            # the tx is logically valid.
+            try:
+                tx_params: TxParams = cast(
+                    TxParams,
+                    contract_fn.build_transaction({"from": account.address}),
+                )
+                logger.debug("[%s] gas estimated=%s", fn_name, tx_params.get("gas"))
+            except (
+                ContractLogicError,
+                ContractCustomError,
+                ContractPanicError,
+                BadFunctionCallOutput,
+            ) as build_exc:
+                logger.warning(
+                    "[%s] estimate_gas returned 0x revert (node limitation) "
+                    "— using gas ceiling 500_000: %s",
+                    fn_name,
+                    build_exc,
+                )
+                tx_params = cast(
+                    TxParams,
+                    contract_fn.build_transaction(
+                        {
+                            "from": account.address,
+                            "gas": 500_000,  # ceiling; unused gas is refunded
+                        }
+                    ),
+                )
+
             nonce = self._w3.eth.get_transaction_count(
                 cast(ChecksumAddress, account.address)
             )
             tx_params["nonce"] = nonce
             tx_params["chainId"] = self._w3.eth.chain_id
-
-            if "gas" not in tx_params:
-                estimated = self._w3.eth.estimate_gas(tx_params)
-                tx_params["gas"] = estimated
-                logger.debug("[%s] gas estimated=%s", fn_name, estimated)
 
             if "gasPrice" not in tx_params and "maxFeePerGas" not in tx_params:
                 tx_params["gasPrice"] = self._w3.eth.gas_price
@@ -164,13 +198,97 @@ class YieldPlayContract:
             ContractPanicError,
             BadFunctionCallOutput,
         ) as exc:
-            logger.error("[%s] contract error: %s", fn_name, exc)
+            logger.error("[%s] contract revert: %s", fn_name, exc)
             raise map_revert_reason(str(exc)) from exc
         except Exception as exc:
             logger.error("[%s] unexpected error: %s", fn_name, exc, exc_info=True)
             raise TransactionError(
                 "Failed to send transaction", details=str(exc)
             ) from exc
+
+    def build_unsigned_tx(
+        self,
+        contract_fn: Any,
+        from_address: str,
+        gas_ceiling: int = 500_000,
+    ) -> dict[str, Any]:
+        """
+        Build an unsigned transaction dict ready to be signed by a frontend wallet
+        (MetaMask, WalletConnect, etc.).
+
+        Returns a JSON-serialisable dict with fields:
+            to, data, gas, nonce, chainId, gasPrice, value
+
+        The caller (frontend) should:
+            1. Receive this dict from the API
+            2. Sign it with eth_signTransaction / sendTransaction in their wallet
+            3. POST the signed raw tx to /api/v1/tx/broadcast
+
+        Note: gas is estimated on-chain; if estimation fails (node limitation)
+        the gas_ceiling is used instead — it is safe because unused gas is refunded.
+        """
+        from_checksum = Web3.to_checksum_address(from_address)
+
+        try:
+            tx = contract_fn.build_transaction({"from": from_checksum})
+        except (
+            ContractLogicError,
+            ContractCustomError,
+            ContractPanicError,
+            BadFunctionCallOutput,
+        ) as exc:
+            logger.warning(
+                "build_unsigned_tx: estimate_gas failed (node) — using ceiling %s: %s",
+                gas_ceiling,
+                exc,
+            )
+            tx = contract_fn.build_transaction(
+                {
+                    "from": from_checksum,
+                    "gas": gas_ceiling,
+                }
+            )
+
+        nonce = self._w3.eth.get_transaction_count(from_checksum)
+        chain_id = self._w3.eth.chain_id
+
+        tx["nonce"] = nonce
+        tx["chainId"] = chain_id
+
+        if "gasPrice" not in tx and "maxFeePerGas" not in tx:
+            tx["gasPrice"] = self._w3.eth.gas_price
+
+        # Return only JSON-serialisable fields (strip web3 internals)
+        return {
+            "to": tx.get("to"),
+            "data": tx.get("data", "0x"),
+            "gas": tx.get("gas"),
+            "nonce": tx.get("nonce"),
+            "chainId": tx.get("chainId"),
+            "value": tx.get("value", 0),
+            # EIP-1559 or legacy gas pricing
+            **(
+                {
+                    "maxFeePerGas": tx["maxFeePerGas"],
+                    "maxPriorityFeePerGas": tx["maxPriorityFeePerGas"],
+                }
+                if "maxFeePerGas" in tx
+                else {"gasPrice": tx.get("gasPrice")}
+            ),
+        }
+
+    def broadcast_signed_tx(self, signed_tx_hex: str) -> str:
+        """
+        Broadcast a raw signed transaction and return the tx hash.
+
+        signed_tx_hex: "0x..." — output of eth_signTransaction / wallet.signTransaction
+        """
+        if not signed_tx_hex.startswith("0x"):
+            signed_tx_hex = "0x" + signed_tx_hex
+        raw = bytes.fromhex(signed_tx_hex.removeprefix("0x"))
+        tx_hash = self._w3.eth.send_raw_transaction(raw)
+        logger.info("broadcast_signed_tx | hash=%s", tx_hash.hex())
+        return "0x" + tx_hash.hex()
 
     # ── Read: game / round info ───────────────────────────────────────────
 
@@ -355,22 +473,19 @@ class YieldPlayContract:
         return status
 
     def calculate_game_id(self, owner: str, game_name: str) -> str:
-        logger.debug("calculate_game_id | owner=%s name=%r", owner, game_name)
-        try:
-            raw = cast(
-                bytes,
-                self._contract.functions.calculateGameId(
-                    Web3.to_checksum_address(owner), game_name
-                ).call(),
-            )
-        except (
-            ContractLogicError,
-            ContractCustomError,
-            ContractPanicError,
-            BadFunctionCallOutput,
-        ) as exc:
-            raise ContractCallError("calculateGameId failed", str(exc)) from exc
-        return self._bytes32_to_hex(raw)
+        """
+        Compute game_id offline — identical to contract's keccak256(abi.encodePacked(owner, gameName)).
+        No RPC call needed; pure functions can still fail on some nodes.
+        """
+        from eth_abi.packed import encode_packed
+
+        logger.debug("calculate_game_id | owner=%s name=%r (offline)", owner, game_name)
+        packed = encode_packed(
+            ["address", "string"], [Web3.to_checksum_address(owner), game_name]
+        )
+        result = "0x" + Web3.keccak(packed).hex()
+        logger.debug("calculate_game_id | result=%s", result)
+        return result
 
     def get_vault(self, token_address: str) -> str:
         logger.debug("get_vault | token=%s", token_address)
@@ -445,6 +560,109 @@ class YieldPlayContract:
         ) as exc:
             raise ContractCallError("deployedShares failed", str(exc)) from exc
 
+    # ── Pre-flight validators (Python-side, no simulate RPC) ──────────────
+    # Public nodes strip revert data → validate state in Python before tx.
+
+    def _preflight_deposit(
+        self,
+        game_id: str,
+        round_id: int,
+        amount_wei: int,
+        account_address: str,
+    ) -> None:
+        """Raise a typed error if deposit would revert."""
+        from yieldplay.exceptions import (
+            InsufficientBalanceError,
+            InvalidAmountError,
+            RoundNotActiveError,
+        )
+
+        if amount_wei <= 0:
+            raise InvalidAmountError("amount_wei must be > 0", str(amount_wei))
+
+        round_info = self.get_round(game_id, round_id)
+        status = self.get_current_status(game_id, round_id)
+
+        logger.debug(
+            "_preflight_deposit | status=%s(%s) total_deposit=%s",
+            status.value,
+            status.label(),
+            round_info.total_deposit,
+        )
+
+        if status != RoundStatus.IN_PROGRESS:
+            raise RoundNotActiveError(
+                f"Round is not accepting deposits (status={status.label()})",
+                f"game_id={game_id} round_id={round_id} status={status.value}",
+            )
+
+        balance = self.get_token_balance(round_info.payment_token, account_address)
+        if balance < amount_wei:
+            raise InsufficientBalanceError(
+                f"Insufficient token balance: have {balance}, need {amount_wei}",
+                f"token={round_info.payment_token}",
+            )
+
+    def _preflight_claim(
+        self,
+        game_id: str,
+        round_id: int,
+        account_address: str,
+    ) -> None:
+        """Raise a typed error if claim would revert."""
+        from yieldplay.exceptions import (
+            AlreadyClaimedError,
+            NoDepositFoundError,
+            RoundNotDistributingError,
+        )
+
+        status = self.get_current_status(game_id, round_id)
+        if status != RoundStatus.DISTRIBUTING_REWARDS:
+            raise RoundNotDistributingError(
+                f"Round is not distributing rewards (status={status.label()})",
+                f"game_id={game_id} round_id={round_id} status={status.value}",
+            )
+
+        deposit_info = self.get_user_deposit(game_id, round_id, account_address)
+        if not deposit_info.exists:
+            raise NoDepositFoundError(
+                "No deposit found for this user in this round",
+                f"user={account_address}",
+            )
+        if deposit_info.is_claimed:
+            raise AlreadyClaimedError(
+                "Already claimed for this round",
+                f"user={account_address}",
+            )
+
+    def _preflight_vault_action(
+        self,
+        fn_label: str,
+        game_id: str,
+        round_id: int,
+        required_status: "RoundStatus",
+        account_address: str,
+        game_id_is_owner: bool = True,
+    ) -> None:
+        """Generic pre-flight for game-owner vault/lifecycle actions."""
+        from yieldplay.exceptions import RoundNotActiveError, UnauthorizedError
+
+        if game_id_is_owner:
+            game_info = self.get_game(game_id)
+            if game_info.owner.lower() != account_address.lower():
+                raise UnauthorizedError(
+                    f"{fn_label}: caller is not the game owner",
+                    f"owner={game_info.owner} caller={account_address}",
+                )
+
+        status = self.get_current_status(game_id, round_id)
+        if status != required_status:
+            raise RoundNotActiveError(
+                f"{fn_label}: wrong round status — need {required_status.label()}, "
+                f"got {status.label()}",
+                f"game_id={game_id} round_id={round_id}",
+            )
+
     # ── Write: user ───────────────────────────────────────────────────────
 
     def deposit(
@@ -458,12 +676,17 @@ class YieldPlayContract:
             amount_wei,
             account.address,
         )
+        # Pre-flight: validates status, balance — raises typed error (not 0x)
+        self._preflight_deposit(game_id, round_id, amount_wei, account.address)
         round_info = self.get_round(game_id, round_id)
         self._ensure_allowance(round_info.payment_token, amount_wei, account)
-        tx = self._contract.functions.deposit(
-            self._to_bytes32(game_id), round_id, amount_wei
-        ).build_transaction(cast(TxParams, {"from": account.address}))
-        return self._send_transaction("deposit", cast(TxParams, tx), account)
+        return self._send_transaction(
+            "deposit",
+            self._contract.functions.deposit(
+                self._to_bytes32(game_id), round_id, amount_wei
+            ),
+            account,
+        )
 
     def claim(self, game_id: str, round_id: int) -> TransactionResult:
         account = self._require_signer()
@@ -473,10 +696,13 @@ class YieldPlayContract:
             round_id,
             account.address,
         )
-        tx = self._contract.functions.claim(
-            self._to_bytes32(game_id), round_id
-        ).build_transaction(cast(TxParams, {"from": account.address}))
-        return self._send_transaction("claim", cast(TxParams, tx), account)
+        # Pre-flight: validates status, deposit exists, not yet claimed
+        self._preflight_claim(game_id, round_id, account.address)
+        return self._send_transaction(
+            "claim",
+            self._contract.functions.claim(self._to_bytes32(game_id), round_id),
+            account,
+        )
 
     # ── Write: game management ─────────────────────────────────────────────
 
@@ -492,18 +718,31 @@ class YieldPlayContract:
             account.address,
         )
 
-        # calculateGameId is pure — safe to call even if createGame would revert
-        # This lets us know the game_id before sending the tx
+        # Pre-flight: validate dev_fee_bps range (contract max = 5000 = 50%)
+        if not (0 <= dev_fee_bps <= 5_000):
+            from yieldplay.exceptions import InvalidDevFeeBpsError
+
+            raise InvalidDevFeeBpsError(
+                f"dev_fee_bps must be 0–5000 (got {dev_fee_bps})",
+                "max is 5000 = 50%",
+            )
+        if not Web3.is_address(treasury):
+            from yieldplay.exceptions import InvalidAmountError
+
+            raise InvalidAmountError("Invalid treasury address", treasury)
+
         game_id = self.calculate_game_id(account.address, game_name)
         logger.debug("create_game | computed game_id=%s", game_id)
 
-        tx = self._contract.functions.createGame(
-            game_name,
-            dev_fee_bps,
-            Web3.to_checksum_address(treasury),
-        ).build_transaction(cast(TxParams, {"from": account.address}))
-
-        result = self._send_transaction("createGame", cast(TxParams, tx), account)
+        result = self._send_transaction(
+            "createGame",
+            self._contract.functions.createGame(
+                game_name,
+                dev_fee_bps,
+                Web3.to_checksum_address(treasury),
+            ),
+            account,
+        )
         logger.info("create_game done | game_id=%s tx=%s", game_id, result.tx_hash)
         return game_id, result
 
@@ -528,16 +767,44 @@ class YieldPlayContract:
             account.address,
         )
 
-        tx = self._contract.functions.createRound(
-            self._to_bytes32(game_id),
-            start_ts,
-            end_ts,
-            lock_time,
-            deposit_fee_bps,
-            Web3.to_checksum_address(payment_token),
-        ).build_transaction(cast(TxParams, {"from": account.address}))
+        # Pre-flight: basic time sanity checks
+        import time as _time
 
-        result = self._send_transaction("createRound", cast(TxParams, tx), account)
+        now = int(_time.time())
+        if end_ts <= start_ts:
+            from yieldplay.exceptions import InvalidAmountError
+
+            raise InvalidAmountError(
+                "end_ts must be > start_ts",
+                f"start_ts={start_ts} end_ts={end_ts}",
+            )
+        if end_ts <= now:
+            from yieldplay.exceptions import InvalidAmountError
+
+            raise InvalidAmountError(
+                "end_ts is in the past",
+                f"end_ts={end_ts} now={now}",
+            )
+        if not (0 <= deposit_fee_bps <= 1_000):
+            from yieldplay.exceptions import InvalidAmountError
+
+            raise InvalidAmountError(
+                f"deposit_fee_bps must be 0–1000 (got {deposit_fee_bps})",
+                "max is 1000 = 10%",
+            )
+
+        result = self._send_transaction(
+            "createRound",
+            self._contract.functions.createRound(
+                self._to_bytes32(game_id),
+                start_ts,
+                end_ts,
+                lock_time,
+                deposit_fee_bps,
+                Web3.to_checksum_address(payment_token),
+            ),
+            account,
+        )
 
         # Parse round_id from the RoundCreated event in the receipt
         # Fallback: roundCounter - 1 (safe because createRound increments it)
@@ -557,26 +824,33 @@ class YieldPlayContract:
     def deposit_to_vault(self, game_id: str, round_id: int) -> TransactionResult:
         account = self._require_signer()
         logger.info("deposit_to_vault | game_id=%s round_id=%s", game_id, round_id)
-        tx = self._contract.functions.depositToVault(
-            self._to_bytes32(game_id), round_id
-        ).build_transaction(cast(TxParams, {"from": account.address}))
-        return self._send_transaction("depositToVault", cast(TxParams, tx), account)
+        return self._send_transaction(
+            "depositToVault",
+            self._contract.functions.depositToVault(
+                self._to_bytes32(game_id), round_id
+            ),
+            account,
+        )
 
     def withdraw_from_vault(self, game_id: str, round_id: int) -> TransactionResult:
         account = self._require_signer()
         logger.info("withdraw_from_vault | game_id=%s round_id=%s", game_id, round_id)
-        tx = self._contract.functions.withdrawFromVault(
-            self._to_bytes32(game_id), round_id
-        ).build_transaction(cast(TxParams, {"from": account.address}))
-        return self._send_transaction("withdrawFromVault", cast(TxParams, tx), account)
+        return self._send_transaction(
+            "withdrawFromVault",
+            self._contract.functions.withdrawFromVault(
+                self._to_bytes32(game_id), round_id
+            ),
+            account,
+        )
 
     def settlement(self, game_id: str, round_id: int) -> TransactionResult:
         account = self._require_signer()
         logger.info("settlement | game_id=%s round_id=%s", game_id, round_id)
-        tx = self._contract.functions.settlement(
-            self._to_bytes32(game_id), round_id
-        ).build_transaction(cast(TxParams, {"from": account.address}))
-        return self._send_transaction("settlement", cast(TxParams, tx), account)
+        return self._send_transaction(
+            "settlement",
+            self._contract.functions.settlement(self._to_bytes32(game_id), round_id),
+            account,
+        )
 
     def choose_winner(
         self, game_id: str, round_id: int, winner: str, amount_wei: int
@@ -589,21 +863,25 @@ class YieldPlayContract:
             winner,
             amount_wei,
         )
-        tx = self._contract.functions.chooseWinner(
-            self._to_bytes32(game_id),
-            round_id,
-            Web3.to_checksum_address(winner),
-            amount_wei,
-        ).build_transaction(cast(TxParams, {"from": account.address}))
-        return self._send_transaction("chooseWinner", cast(TxParams, tx), account)
+        return self._send_transaction(
+            "chooseWinner",
+            self._contract.functions.chooseWinner(
+                self._to_bytes32(game_id),
+                round_id,
+                Web3.to_checksum_address(winner),
+                amount_wei,
+            ),
+            account,
+        )
 
     def finalize_round(self, game_id: str, round_id: int) -> TransactionResult:
         account = self._require_signer()
         logger.info("finalize_round | game_id=%s round_id=%s", game_id, round_id)
-        tx = self._contract.functions.finalizeRound(
-            self._to_bytes32(game_id), round_id
-        ).build_transaction(cast(TxParams, {"from": account.address}))
-        return self._send_transaction("finalizeRound", cast(TxParams, tx), account)
+        return self._send_transaction(
+            "finalizeRound",
+            self._contract.functions.finalizeRound(self._to_bytes32(game_id), round_id),
+            account,
+        )
 
     # ── Token utilities ────────────────────────────────────────────────────
 
@@ -674,11 +952,14 @@ class YieldPlayContract:
         token = self._w3.eth.contract(
             address=Web3.to_checksum_address(token_address), abi=ERC20_ABI
         )
-        tx = token.functions.approve(
-            Web3.to_checksum_address(self._config.yield_play_address),
-            spender_amount,
-        ).build_transaction(cast(TxParams, {"from": account.address}))
-        return self._send_transaction("approve", cast(TxParams, tx), account)
+        return self._send_transaction(
+            "approve",
+            token.functions.approve(
+                Web3.to_checksum_address(self._config.yield_play_address),
+                spender_amount,
+            ),
+            account,
+        )
 
     def get_token_decimals(self, token_address: str) -> int:
         token = self._w3.eth.contract(

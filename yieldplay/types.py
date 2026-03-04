@@ -7,11 +7,11 @@ No business logic here – pure data definitions.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from enum import IntEnum
 from typing import Optional
 
 from pydantic import BaseModel, Field
-
 
 # ──────────────────────────────────────────────
 # Enums
@@ -19,11 +19,11 @@ from pydantic import BaseModel, Field
 
 
 class RoundStatus(IntEnum):
-    NOT_STARTED = 0          # Round chưa bắt đầu
-    IN_PROGRESS = 1          # Đang nhận deposit
-    LOCKING = 2              # Đang khóa, không nhận deposit
-    CHOOSING_WINNERS = 3     # Game owner chọn người thắng
-    DISTRIBUTING_REWARDS = 4 # Người dùng có thể claim
+    NOT_STARTED = 0  # Round chưa bắt đầu
+    IN_PROGRESS = 1  # Đang nhận deposit
+    LOCKING = 2  # Đang khóa, không nhận deposit
+    CHOOSING_WINNERS = 3  # Game owner chọn người thắng
+    DISTRIBUTING_REWARDS = 4  # Người dùng có thể claim
 
     def label(self) -> str:
         return {
@@ -111,14 +111,14 @@ class TransactionResult(BaseModel):
 class FeeBreakdown(BaseModel):
     """Human-readable fee calculation for a round."""
 
-    total_deposit_gross: int        # Wei: raw deposits before deposit fee
-    deposit_fee_collected: int      # Wei: deposit fee → bonus prize pool
-    net_deposits: int               # Wei: principal returned to users
-    vault_yield: int                # Wei: raw yield from vault
-    performance_fee: int            # Wei: 20% of yield → protocol treasury
-    dev_fee: int                    # Wei: devFeeBps% of yield after perf fee → game treasury
-    yield_prize: int                # Wei: yield after both fees → winners
-    total_prize_pool: int           # Wei: yield_prize + deposit_fee_collected
+    total_deposit_gross: int  # Wei: raw deposits before deposit fee
+    deposit_fee_collected: int  # Wei: deposit fee → bonus prize pool
+    net_deposits: int  # Wei: principal returned to users
+    vault_yield: int  # Wei: raw yield from vault
+    performance_fee: int  # Wei: 20% of yield → protocol treasury
+    dev_fee: int  # Wei: devFeeBps% of yield after perf fee → game treasury
+    yield_prize: int  # Wei: yield after both fees → winners
+    total_prize_pool: int  # Wei: yield_prize + deposit_fee_collected
 
 
 # ──────────────────────────────────────────────
@@ -146,7 +146,9 @@ class SDKConfig(BaseModel):
 
 class CreateGameRequest(BaseModel):
     game_name: str = Field(min_length=1, max_length=100)
-    dev_fee_bps: int = Field(ge=0, le=10_000, description="Developer fee in basis points (0–10 000)")
+    dev_fee_bps: int = Field(
+        ge=0, le=10_000, description="Developer fee in basis points (0–10 000)"
+    )
     treasury: str = Field(description="Address that receives dev fee")
 
 
@@ -155,12 +157,30 @@ class CreateGameResponse(BaseModel):
     transaction: TransactionResult
 
 
+def now_ts() -> int:
+    return int(datetime.utcnow().timestamp())
+
+
+def end_ts_30_days() -> int:
+    return int((datetime.utcnow() + timedelta(days=30)).timestamp())
+
+
 class CreateRoundRequest(BaseModel):
     game_id: str
-    start_ts: int = Field(ge=0, description="Unix timestamp – round opens")
-    end_ts: int = Field(ge=0, description="Unix timestamp – deposit window closes")
-    lock_time: int = Field(ge=0, description="Lock duration in seconds after end_ts")
-    deposit_fee_bps: int = Field(ge=0, le=1_000, description="Deposit fee in basis points (0–1 000)")
+    start_ts: int = Field(
+        default_factory=now_ts, ge=0, description="Unix timestamp – round opens"
+    )
+    end_ts: int = Field(
+        default_factory=end_ts_30_days,
+        ge=0,
+        description="Unix timestamp – deposit window closes",
+    )
+    lock_time: int = Field(
+        default=0, ge=0, description="Lock duration in seconds after end_ts"
+    )
+    deposit_fee_bps: int = Field(
+        default=0, ge=0, le=1_000, description="Deposit fee in basis points (0–1 000)"
+    )
     payment_token: str = Field(description="ERC-20 token address accepted for deposits")
 
 
@@ -172,7 +192,9 @@ class CreateRoundResponse(BaseModel):
 class DepositRequest(BaseModel):
     game_id: str
     round_id: int = Field(ge=0)
-    amount_wei: str = Field(description="Amount in wei (string to avoid precision loss)")
+    amount_wei: str = Field(
+        description="Amount in wei (string to avoid precision loss)"
+    )
 
 
 class ClaimRequest(BaseModel):
@@ -244,7 +266,7 @@ class UserRoundSummary(BaseModel):
     status_label: str
     round_start_ts: int
     round_end_ts: int
-    lock_until_ts: int          # end_ts + lock_time
+    lock_until_ts: int  # end_ts + lock_time
 
     # User deposit position
     has_deposit: bool
@@ -253,9 +275,9 @@ class UserRoundSummary(BaseModel):
     is_claimed: bool
 
     # Actionability flags (derived)
-    can_deposit: bool           # status == IN_PROGRESS and has balance and not already deposited
-    can_claim: bool             # status == DISTRIBUTING_REWARDS and not is_claimed and has_deposit
-    needs_approval: bool        # allowance < deposit_amount (only meaningful pre-deposit)
+    can_deposit: bool  # status == IN_PROGRESS and has balance and not already deposited
+    can_claim: bool  # status == DISTRIBUTING_REWARDS and not is_claimed and has_deposit
+    needs_approval: bool  # allowance < deposit_amount (only meaningful pre-deposit)
 
     # Token context
     payment_token: str
@@ -268,7 +290,7 @@ class UserRoundSummary(BaseModel):
         default=None,
         description="User deposit as % of total round deposit",
     )
-    prize_pool_wei: str         # total_win + bonus_prize_pool at current moment
+    prize_pool_wei: str  # total_win + bonus_prize_pool at current moment
     participant_count: Optional[int] = Field(
         default=None,
         description="Number of unique depositors (from DB index, None if not yet indexed)",
@@ -320,7 +342,7 @@ class RoundDashboard(BaseModel):
     fee_breakdown: FeeBreakdown
 
     # Lifecycle checklist for game owners
-    next_action: str            # human-readable next step
+    next_action: str  # human-readable next step
     participant_count: Optional[int] = Field(
         default=None,
         description="Number of unique depositors (from DB, None if not yet indexed)",
@@ -370,13 +392,13 @@ class DepositEligibility(BaseModel):
     round_is_active: bool
     has_sufficient_balance: bool
     has_sufficient_allowance: bool
-    already_deposited: bool     # True = user already has a position (re-deposit check)
+    already_deposited: bool  # True = user already has a position (re-deposit check)
 
     # Context
     token_balance_wei: str
     token_allowance_wei: str
     deposit_fee_bps: int
-    net_amount_after_fee_wei: str   # what user actually gets credited
+    net_amount_after_fee_wei: str  # what user actually gets credited
 
 
 class ClaimEligibility(BaseModel):
